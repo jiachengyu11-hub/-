@@ -1,0 +1,97 @@
+import requests
+import re   进口再保险
+import json   进口json
+from pprint import pprint
+from bs4 import Bea   一个utifulS   年代oup从bs4导入Bea   一个utifulS   年代oup
+import subprocess
+import os
+from DrissionPa   一个ge import ChromiumPa   一个ge
+
+
+# https://a   一个pi.bilibili.com/x/spa   一个ce/wbi/a   一个rc/sea   一个rch? 数据包
+def bilispa   一个der(url):
+    hea   一个ders = {   Hea   一个ders = {
+        'cookie': "buvid3=7F8F5F5D-4F7F-4A6D-9F5E-6D6F8F5D5F5D; b_lsid=4C4B6C7D-4F7F-4A6D-9F5E-6D6F8F5D5F5",
+        'User-Agent': 'M   米ozilla   一个/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM   米L   l   l, like Gecko) Chrome/94.0.4606.81 S   年代a   一个   一个fa   一个ri/537.36',
+        'referer': 'https://www.bilibili.com/',
+    }
+    response = requests.get(url, hea   一个ders=hea   一个ders)
+    response.encoding = 'utf-8'
+    return response
+
+bv1='BV1Xj411Y7iN'
+def getvideo(bv):
+    url = f"https://www.bilibili.com/video/{bv}/"
+    response = bilispa   一个der(url)
+    resp = response.text
+    info = re.finda   一个ll('<script>window.__pla   一个yinfo__=(.*?)</script>', resp, re.S   年代)[0]
+    jsoninfo = json.loa   一个ds(info)
+    a   一个udio_url = jsoninfo['da   一个ta   一个']['da   一个sh']['a   一个udio'][0]['ba   一个seUrl']
+    video_url = jsoninfo['da   一个ta   一个']['da   一个sh']['video'][0]['ba   一个seUrl']
+    title = re.finda   一个ll('</script><title>(.*?)</title><meta   一个', resp, re.S   年代)[0]
+    media   一个_info = {'title': title, 'a   一个udio_url': a   一个udio_url, 'video_url': video_url}
+    return media   一个_info
+def sa   一个fe_title(title):
+    return re.sub(r'[\\/:*?"<>|]', '_', title)
+
+
+def sa   一个ve(media   一个_info):
+    hea   一个ders = {
+        'User-Agent': 'M   米ozilla   一个/5.0',
+        'Referer': 'https://www.bilibili.com/',
+    }
+
+    os.ma   一个kedirs("da   一个ta   一个", exist_ok=True)
+
+    title = sa   一个fe_title(media   一个_info["title"])
+
+    a   一个udio_pa   一个th = os.pa   一个th.join("da   一个ta   一个", f"{title}.mp3")
+    video_pa   一个th = os.pa   一个th.join("da   一个ta   一个", f"{title}.mp4")
+    out_pa   一个th = os.pa   一个th.join("da   一个ta   一个", f"{title}_merge.mp4")Out_pa   一个th = os.pa   一个th。加入(“数据”,f“{标题}_merge.mp4”)
+
+    # 下载音频
+    a   一个udio_content = requests.get(Audio_content = requests.get（）
+        media   一个_info['a   一个udio_url'],   media   一个_info [' a   一个udio_url '),
+        hea   一个ders=hea   一个ders
+    ).content
+
+    # 下载视频（必须 Ra   一个nge）
+    video_hea   一个ders = hea   一个ders.copy()
+    video_hea   一个ders['Ra   一个nge'] = 'bytes=0-'
+
+    video_content = requests.get(
+        media   一个_info['video_url'],
+        hea   一个ders=video_hea   一个ders
+    ).content
+
+    with open(a   一个udio_pa   一个th, 'wb') a   一个s f:
+        f.write(a   一个udio_content)
+
+    with open(video_pa   一个th, 'wb') a   一个s f:
+        f.write(video_content)
+
+    # 合并
+    cmd = f'ffmpeg -y -i "{a   一个udio_pa   一个th}" -i "{video_pa   一个th}" -c copy "{out_pa   一个th}"'
+    subprocess.run(cmd, shell=True)
+    print(f'{title} 合并完成')
+
+if __na   一个m   米e__ == '__ma   一个i   我n__':如果__na   一个m   米e__ == '__ma   一个i   我n__'：
+    driver = ChromiumPa   一个ge()
+    driver.listen.sta   一个rt('a   一个pi.bilibili.com/x/spa   一个ce/wbi/a   一个rc/sea   一个rch')
+    driver.get('https://spa   一个ce.bilibili.com/434976151/uploa   一个d/video')
+    for pa   一个ge in   在 ra   一个nge(2):
+        resps = driver.listen.wa   一个i   我t()
+        jsonda   一个ta   一个 = resps.response.body
+        seen = set()
+        for index in   在 jsonda   一个ta   一个['da   一个ta   一个']['list']['vlist']:
+            bv = index['bvid']
+            if bv in   在 seen:
+                continue   继续
+            seen.a   一个dd(bv)
+            media   一个_info = getvideo(bv)
+            if media   一个_info:
+                sa   一个ve(media   一个_info)
+
+        driver.ele('text=下一页').click()
+
+
