@@ -1,0 +1,435 @@
+import requests
+from bs4 import BeautifulSoup
+import time
+import pymysql
+
+# --------------------------
+# 1. 从 HTML 提取航班数据
+# --------------------------
+def parse_flight_data(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    table = soup.find("table", id="ctl00_ContentPlaceHolder1_GV_Main")
+    if not table:
+        return []
+
+    trs = table.find_all("tr")
+    flight_list = []
+    headers = []
+
+    for tr in trs:
+        cls = tr.get("class", [])
+        if "gv_HeaderStyle" in cls:
+            headers = [th.get_text(strip=True) for th in tr.find_all("th")]
+        elif "gv_RowStyle" in cls or "gv_AlternatingRowStyle" in cls:
+            cols = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if any(cols):
+                row = dict(zip(headers, cols))
+                flight_list.append(row)
+    return flight_list
+
+# --------------------------
+# 2. 获取所有关联包裹
+# --------------------------
+def get_other_packages(tracking_number, cookies, headers):
+    url = "https://webapis.ups.com/track/api/Track/GetAdditionalPackages"
+    params = {'loc': 'zh_CN'}
+
+    json_data = {
+        'trackingNumber': [tracking_number],
+        'locale': 'zh_CN',
+        'internalKey': ',,,',
+        'startingTrackIndex': 0,
+        'maxTrackNumbers': 5,
+    }
+
+    try:
+        response = requests.post(
+            url,
+            params=params,
+            cookies=cookies,
+            headers=headers,
+            json=json_data,
+            timeout=10
+        )
+        if response.status_code != 200:
+            return ""
+
+        data = response.json()
+        all_tracking_numbers = []
+
+        additional_packages = data.get("trackDetail", {}).get("additionalPackages", [])
+        for pkg in additional_packages:
+            num = pkg.get("trackingNumber")
+            if num:
+                all_tracking_numbers.append(num)
+
+        return ", ".join(all_tracking_numbers)
+
+    except Exception as e:
+        print(f"获取其他包裹异常：{e}")
+        return ""
+
+# --------------------------
+# 3. UPS 物流查询
+# --------------------------
+# --------------------------
+# 3. UPS 物流查询
+# --------------------------
+def query_ups_detail(tracking_number, cookies, headers):
+    url_status = 'https://webapis.ups.com/track/api/Track/GetStatus'
+
+    try:
+        json_std = {
+            'Locale': 'zh_CN',
+            'TrackingNumber': [tracking_number],
+            'isBarcodeScanned': False,
+            'Requester': 'st/trackdetails',
+            'ClientUrl': f'https://www.ups.com/track?loc=zh_CN&requester=ST/trackdetails&tracknum={tracking_number}'
+        }
+        for attempt in range(3):
+            try:
+                resp1 = requests.post(url_status, params={'loc': 'zh_CN'}, cookies=cookies, headers=headers, json=json_std, timeout=30)
+                break
+            except requests.exceptions.Timeout:
+                print(f"  ⏳ 超时，第{attempt+1}次重试...")
+                time.sleep(3)
+        else:
+            return {}
+
+        if resp1.status_code != 200:
+            return {}
+
+        data = resp1.json()
+        if not data or 'trackDetails' not in data or len(data['trackDetails']) == 0:
+            return {}
+
+        details = data['trackDetails'][0]
+
+        # ====================== 这里是修复的核心 ======================
+        import html
+        # 正确层级：additionalInformation → serviceInformation → serviceName
+        add_info = details.get("additionalInformation", {})
+        service_info = add_info.get("serviceInformation", {})
+        service_name = service_info.get("serviceName", "")
+        service_name = html.unescape(service_name)  # 去掉乱码 ®
+        print(f"  DEBUG 服务名称: {service_name}")
+        # ============================================================
+
+        if not details:
+            return {}
+
+        other_packages = get_other_packages(tracking_number, cookies, headers)
+        total_qty = len(other_packages.split(", ")) if other_packages else 1
+
+        add_info = details.get('additionalInformation', {})
+        shipment_progress = details.get('shipmentProgressActivities', [])
+
+        send_address = ""
+        dest_address = ""
+
+        if shipment_progress:
+            first_act = shipment_progress[-1]
+            send_address = first_act.get("location", "").strip()
+
+        if shipment_progress:
+            last_act = shipment_progress[0]
+            dest_address = last_act.get("location", "").strip()
+
+        if not send_address:
+            ship_from = details.get('shipFromAddress') or {}
+            send_parts = [ship_from.get('city', ''), ship_from.get('state', ''), ship_from.get('country', '')]
+            send_address = ', '.join(filter(None, send_parts))
+
+        if not dest_address:
+            ship_to = details.get('shipToAddress') or {}
+            dest_parts = [ship_to.get('city', ''), ship_to.get('state', ''), ship_to.get('country', '')]
+            dest_address = ', '.join(filter(None, dest_parts))
+
+        send_address = send_address.strip()
+        dest_address = dest_address.strip()
+
+        status = details.get('packageStatus', '')
+        delivery_date = details.get('currentMilestone', {}).get('date', '')
+        ship_date = add_info.get('shippedOrBilledDate', '')
+        arrival_date = ""
+        for act in shipment_progress:
+            if "抵达设施" in act.get('activityScan', '') and "Hong Kong" in act.get('location', ''):
+                arrival_date = act.get('date', '')
+                break
+
+        from urllib.parse import urlparse
+        来源 = "UPS" if "ups.com" in urlparse(url_status).netloc else "FedEx"
+
+        return {
+            "签收日期": delivery_date,
+            "发货日期": ship_date,
+            "总件数": total_qty,
+            "抵港日期": arrival_date,
+            "入口": "",
+            "收件地": dest_address,
+            "状态": status,
+            "送达日期": delivery_date,
+            "托送日期": ship_date,
+            "总数量": total_qty,
+            "其他包裹": other_packages,
+            "来源": 来源,
+            "发货地址": send_address,
+            "收货地址": dest_address,
+            "服务": service_name,  # 已正确赋值
+        }
+
+    except Exception as e:
+        print(f"⚠️ {tracking_number} 运行报错: {e}")
+        return {}
+
+# --------------------------
+# 4. 存入数据库（INSERT）
+# --------------------------
+def insert_to_db(row, conn):
+    cursor = conn.cursor()
+    sql = """
+        INSERT INTO fedex_customs_full (
+            查询号码, 主空运提单号码, 运输方式, 装货港口,
+            发货地址, 收货地址, 状态, 签收日期,
+            发货日期, 总件数, 抵港日期, 入口, 运单号, 其他包裹,
+            货运单号, 航班车辆船只编号, 主运单号, 来源, 服务
+        ) VALUES (
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s
+        )
+    """
+    values = (
+        row.get("Package ID / Tracking No.", ""),
+        row.get("AirwayBill No./CCRN", ""),
+        row.get("Transport Mode", ""),
+        row.get("Port", ""),
+        row.get("发货地址", ""),
+        row.get("收货地址", ""),
+        row.get("状态", ""),
+        row.get("签收日期", ""),
+        row.get("发货日期", ""),
+        row.get("总件数", 1),
+        row.get("抵港日期", ""),
+        row.get("入口", ""),
+        row.get("Package ID / Tracking No.", ""),
+        row.get("其他包裹", ""),
+        row.get("Shipment ID (AirwayBill No.)", ""),
+        row.get("Flight/Vehicle/Vessel No.", ""),
+        row.get("Master AirwayBill No./CCRN", ""),
+        row.get("来源", "UPS"),
+        row.get("服务", ""),
+    )
+    try:
+        cursor.execute(sql, values)
+        print(f"  ✅ 新增入库: {row.get('Package ID / Tracking No.')} 【服务：{row.get('服务','')}】")
+    except Exception as e:
+        print(f"  ❌ 新增失败: {e}")
+    finally:
+        cursor.close()
+
+# --------------------------
+# 5. 更新数据库（UPDATE）
+# --------------------------
+def update_to_db(tracking_number, ups_info, flight_row, conn):
+    cursor = conn.cursor()
+    sql = """
+        UPDATE fedex_customs_full SET
+            状态 = %s,
+            签收日期 = %s,
+            抵港日期 = %s,
+            入口 = %s,
+            其他包裹 = %s,
+            总件数 = %s,
+            货运单号 = %s,
+            航班车辆船只编号 = %s,
+            主运单号 = %s,
+            发货地址 = %s,
+            收货地址 = %s,
+            服务 = %s
+        WHERE 查询号码 = %s
+    """
+    values = (
+        ups_info.get("状态", ""),
+        ups_info.get("签收日期", ""),
+        ups_info.get("抵港日期", ""),
+        ups_info.get("入口", ""),
+        ups_info.get("其他包裹", ""),
+        ups_info.get("总件数", 1),
+        flight_row.get("Shipment ID (AirwayBill No.)", ""),
+        flight_row.get("Flight/Vehicle/Vessel No.", ""),
+        flight_row.get("Master AirwayBill No./CCRN", ""),
+        ups_info.get("发货地址", ""),
+        ups_info.get("收货地址", ""),
+        ups_info.get("服务", ""),
+        tracking_number,
+    )
+    try:
+        cursor.execute(sql, values)
+        print(f"  🔄 已更新: {tracking_number} 【服务：{ups_info.get('服务','')}】")
+    except Exception as e:
+        print(f"  ❌ 更新失败: {e}")
+    finally:
+        cursor.close()
+
+# --------------------------
+# 6. 查询数据库中该单号是否已存在及其状态
+# --------------------------
+def get_db_status(tracking_number, conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT 状态 FROM fedex_customs_full WHERE 查询号码 = %s", (tracking_number,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        print(f"  ❌ 查询状态失败: {e}")
+        return None
+    finally:
+        cursor.close()
+
+# --------------------------
+# 7. 判断是否已送达
+# --------------------------
+def is_delivered(status):
+    delivered_keywords = ["已送达", "已投递", "Delivered", "delivered"]
+    return any(kw in str(status) for kw in delivered_keywords)
+
+# --------------------------
+# 8. 主程序
+# --------------------------
+if __name__ == "__main__":
+    url = "http://upsfd.ecfreight.net/UPSSCCust.aspx"
+    session = requests.Session()
+    headers_web = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    TRACKING_NUMBERS = [
+        '1ZG2B4816604376937','1ZG2B4816604378953','1ZG2B4816604381903','1ZF4Y2370448743011','1Z7E13240430221579','1ZG2B4816604372986','1Z2R32290473673072','1Z2R32290475225945','1Z8695296656024866','1Z2R32290473161786','1ZG2B4816604380664','1Z7E13240430242798','1Z47EE910464386284','1Z8695296656024268','1ZR4477R0465124554','1ZF319690415461700','1ZWR37170447977615','1Z1682WW0498476770','1ZX81Y946740456793','1zwr37170448157513','1Z8695296656017972'
+    ]
+
+    resp1 = session.get(url, headers=headers_web)
+    soup1 = BeautifulSoup(resp1.text, "html.parser")
+
+    tracking_text = "\n".join(TRACKING_NUMBERS).strip()
+    data = {
+        "__EVENTTARGET": "",
+        "__EVENTARGUMENT": "",
+        "__VIEWSTATE": soup1.find(id="__VIEWSTATE")["value"],
+        "__VIEWSTATEGENERATOR": soup1.find(id="__VIEWSTATEGENERATOR")["value"],
+        "__EVENTVALIDATION": soup1.find(id="__EVENTVALIDATION")["value"],
+        "ctl00$ContentPlaceHolder1$txtCustomerShipNo": tracking_text,
+        "ctl00$ContentPlaceHolder1$btnCustomerSearch": "Search"
+    }
+    resp2 = session.post(url, headers=headers_web, data=data)
+    flight_data = parse_flight_data(resp2.text)
+    print(f"✅ 网页返回航班数据 {len(flight_data)} 条")
+
+    flight_dict = {row["Package ID / Tracking No."]: row for row in flight_data}
+
+    cookies = {
+        'ups_language_preference': 'zh_CN',
+        's_fid': '5F3AA120B4BE6335-313A7596596D610D',
+        '_fbp': 'fb.1.1777368267801.659785543712575395.Bg',
+        '_gcl_au': '1.1.1871436413.1777368268',
+        's_vi': '[CS]v1|34F83E6901F75715-6000083EC0BD797F[CE]',
+        '_ga': 'GA1.1.1337614813.1777368272',
+        'OptanonAlertBoxClosed': '2026-04-28T09:24:44.984Z',
+        'bm_lso': 'B72746F2BF9013360412EEF3F7AC52C7115DDE3425676727600525AF8FBDCCCB~YAAQ1N81F6F+tcOdAQAALVWG3AeRetXSKrZkzC5MrTZdvjdyC7S7ipqBfizUIUkQtFmdz3qouFtn2FjtCFJxsXz4iv+nw8flIV84q7v8r6EXR/E4zyr8BHIaZEPxVZi20pncy86DH5DQTvWHBT6LFXY0rihWIhMY6O480OvqkNYgfbI3+s9MquzPru95IfrXB/A6E4DmLMOurn0yH7+g8UWWiewLT6Dx9OKBHMCtfUAP9lFcfG0SHX8VuxMi9TKzSIh9rHzfrbLvPDv/bL6O2/LUbF4m7y1+NiLUFOyZNBYDIaE5lj1S6N1DuuMGY4k8C0MfzseH5REwNQEa1JFxgGwaK0EOHnWBFTi+IAIlHp68rjNEUtWDTqwfnGP9LR4thf9I6OaOqUZo4Lfkh8HBLeZ7S28D/IMkmdSVQ883nsylqKlfnuTpmD6vKotwyj64Y+9oFyDEh9dMpfS+cejS3g==~1777521272541',
+        'X-CSRF-TOKEN': 'CfDJ8Jcj9GhlwkdBikuRYzfhrpIBWPiH2UPWeFUPZtRgrB8gWYUAARwA_x4k3T8VRgAd_5PMTgOK8fTOKZwBcN34AjnSc1D4-vn5-93-pTT7qpSPTiNjw_JgAVQOOnL7rXiG8dCFbT4cuWP99VBa4S5MGyo',
+        'PIM-SESSION-ID': 'EPP1n7VdQi8ib7HV',
+        'at_check': 'true',
+        'AMCVS_036784BD57A8BB277F000101%40AdobeOrg': '1',
+        's_cc': 'true',
+        'st_cur_page': 'st_track',
+        'aap_cms': 'Global~GuestOnlyRTG',
+        's_vnc365': '1809660989515%26vn%3D17',
+        'OptanonConsent': 'isGpcEnabled=0&datestamp=2026-05-07T03%3A36%3A59.556Z&version=202602.1.0&browserGpcFlag=0&isIABGlobal=false&hosts=&consentId=7a9debcf-05a9-4555-80b6-3495846bd630&interactionCount=1&isAnonUser=1&prevHadToken=0&landingPath=NotLandingPage&groups=C0001%3A1%2CC0004%3A1%2CC0005%3A1%2CC0008%3A1%2CC0009%3A1&intType=3&geolocation=US%3BCA&AwaitingReconsent=false',
+        's_ips': '150',
+        'AMCV_036784BD57A8BB277F000101%40AdobeOrg': '179643557%7CMCIDTS%7C20580%7CMCMID%7C33389405481280082921153335317136743089%7CMCAAMLH-1778729820%7C3%7CMCAAMB-1778729820%7C6G1ynYcLPuiQxYZrsz_pkqfLG9yMXBpb2zX5dvJdYQJzPXImdj0y%7CMCOPTOUT-1778132220s%7CNONE%7CvVersion%7C5.5.0',
+        's_tslv': '1778125020797',
+        '_uetsid': 'feeb5fa048e811f1ae4ba91f43bbe3a5',
+        '_uetvid': '109fbdf042e411f189a373790f0c8922',
+        'mbox': 'PC#6543dade0f644e5eaf68e9e28cce2949.38_0#1841369852|session#4e3b549045c146d79f0d41e6230f4f30#1778126911',
+        'bm_ss': 'ab8e18ef4e',
+        's_nr30': '1778131636584-Repeat',
+        'utag_main': 'v_id:019dd36773af001e6bf025a4d38e0507d003107500bd8$_sn:11$_se:22%3Bexp-session$_ss:0%3Bexp-session$_st:1778133436527%3Bexp-session$ses_id:1778115277598%3Bexp-session$_pn:2%3Bexp-session$sr_sample_user:undefined%3Bexp-session$vapi_domain:ups.com$dc_visit:2$dc_event:31%3Bexp-session$dc_region:us-west-2%3Bexp-session$googleSegment:NoSegment$bingSegment:NoSegment$tag_session_105:1%3Bexp-session$_prevpage:ups%3Acn%3Azh%3Atrack%3Bexp-1778135236539$_prevpageid:tracking%2FtrackWeb%2Ftra(3det).html%3Bexp-1778135236539$_storepreviouspageids:%3Bexp-1778135236541$googleTags:N$bingTags:N',
+        'bm_so': '6B384328BCB2829AB76646E46A108138BA569DCA7DAFF6EF5AD9C35D7FB3CDDE~YAAQqqTBF+eFrfidAQAAXMTxAAegE2zLziC3DCI+FNitOGbVGIb8nGztSrGGiEn/rwO21exW5CGF4Dwy20o/ihBRpPHe/Gp4yU5fKPBExwbGNCGSGIwCG99NK9n9l7Pwtd6TKBG/YDgkPj6ofE2mDkZbXWtscBE45kqlyHdd/86G+EFiUrHzRTMgIaUQsqRXqbAnWEJE62k67S6LfZlNBQ7M4sM/Ed8aWrhjkXVuNoCjsbUTH1x3AAbngZckeV/IAl9Xr4Xt7mD6Z0NcsuNyRqSMFMMm/nAIvPjjgDRIDtXmzEFZ9kX/KpiWvHBT3g+l5JuPUXrNJUaqdbjwkOoCIDNDEoeAFnBrKzr4qSXOGGCF4XTxuDHPhZfCOiIdpMceRPvYwmOq62csCzLMqslzcGA0CMRt5iW3cdFwkpCtsLJGTw8BqccJUlipPDOc6C7tk/cqnz0bXq2eBVhxR5MXfSU=',
+        's_tp': '3502',
+        's_ppv': 'ups%253Acn%253Azh%253Atrack%2C4%2C54%2C22%2C1882%2C4%2C1',
+        'X-XSRF-TOKEN-ST': 'CfDJ8Jcj9GhlwkdBikuRYzfhrpJb3aea4mFq519wUhMsero6c62y3wcQIn1JGIkOvLn9Q3kIRSgWO5K9Y0oRBubN9_k4X78h-VLsMONTbRdIzQusu10DrxwPr1PwvcNPzIlk5qUTXCrk-y8duRwFyATEHKo',
+        'AKA_A2': 'A',
+        'bm_s': 'YAAQqqTBF0KKrfidAQAAENzxAAV1eF+b8z6ECTFS9l6HyoHelwnkrTw2BGCi/BHJu2yZauft1jm5U9CCdgZmM/q+dCUcve9IJgbxw9baB8GLr1GGKpUSdKs5DktbPD30znSW1a/vsiMzWZfpHfNiyJA8vRYh6PF5kucwN/gV/BYeCuM+VZ0u5uDrS+MYdzemiqYIQAOQyyUNWsbVHP9q601KnfgH4CrRbcCPOk38UYXl3ZGdD9JfAg8n23sv9BMOO0x2m6HhKB9/J2GilUHG81xzfv8CCrtLSZgHITSxHQRbvMzwoL4rhgrXhh+ydoYqo3OyiWfkjZOxF7wFbCFjnOQ1zaShYBAZgDu0ZoljF5VqezJfXqO/FY6FDb/wXWK5EvveeIQc+3NU6bvDJJpitWT6JnFczkNFiBB+g5d17zihdxYhHXJHHvj/3NdXgsC+Vtas2Hi2iDv4hqjDSLEoAcfCB/S0Lmq328PhyNjz5u4WlPmvgt1Xg5GOOjCBFdNppwnYUpaeZo28SGVzAgJuySUCMW6i9gBZzR2YBDtNvmxyXfekLm/Qdg2ygII9fix9Mm8m/I1iNBNw6YWtxsfaZCjqKpYsQEumMPt9B+Wcw5EeyZxGWelCbTd7PRCE+HXozbDC7nQSMMfup0Jq2E0Ev/oehG8m5/RQvCoI9arQfyPzmnE9EK7oN/ugkAIJWjketUXwfILL03m4cmiGhPySBS8leGqfjYSnhKQqevpgX9dpgQ7CRmJCMJ2VE16lMWbNMKBxINdrOSJkuNjshHtey9xtliM8aTDvjHNCaXhydoRK3YVmSo0qNvst8owF5rMhsiM7qcNZpMNT6yfkNVEXhbTY+rO95Czoth/tJZN2sdkbn/B0pTqaK0lIMsYg1naRdEV88aGdBNpAif7EMIl5SdfX7e3CiniJphqHrJjehQjoUp71CqvlG4oVNLcBB8MVkI/KnZVikTIO17d7oxm+eE/U/5TgF/cpoQqwoukdsq8QGKU=',
+        'bm_sz': '15851DC2BC6FE06936111A392DBBEC06~YAAQqqTBF0OKrfidAQAAENzxAB8Vhv0dVRhsh1wSfXjtM2iwo03ULgX6a2IBOhVJb1pnQBcEHsiF/m0kAtrQzsnqN1vr1ss3pyt+5g5AboLiOL3tK8rRs8e4OOPsl2VQEUlH/z1NXK2JT3tHKTZqIuJFVplewed9b53M6c2gjMwmQi2iZU5GC1vYnX4jYLntLS5hA26D5c+lAI+iTTvR019HS2LGkAUxWY7mpwTJib4SKdDv65Od/34oqrwGr3/HgipsB/Km6gbr0INbnujG35jYm467aRf9tqroeGWVkSMftFJngQwayG9AgcVaqfZ5Px55XEUsaYpmWMIuDCUkwZBYCiKJNfzkeAee+PSHkbzHt9grgZeFeYWL7E7bpEKJ0+f4kDkhWDzDGUge7sq/UPM=~3556149~4604211',
+        '_ga_13B5QB73DW': 'GS2.1.s1778132311$o18$g0$t1778132311$j60$l0$h0',
+        'RT': '"z=1&dm=ups.com&si=23d95b73-fc8b-4d8e-941c-329d5d2a7e1c&ss=mouxq1kp&sl=0&tt=0&bcn=%2F%2F684d0d45.akstat.io%2F"',
+        '_abck': '3D5ABCD2CA21466D1A1379BC762C3399~0~YAAQqqTBF4GLrfidAQAAUuHxAA+/hL9+A8wgIVNIjgqRQ8OnYnqPMO8u40Vj2zX6b2GCeMR9SJglcZFFGdIAv24R0l292njWnlGDWYDxV4vAiTDEIX+FgifsYUCZnjqfcVVk9hkvZ5eF0RPKCEiw/Y7D7AK9Q24ESCEZyhIY3eSZVo+k1nfy24p0w51ywWZJtO4jUXN4gWTQtVPL5WQga26R8uxZuoGLTcn4ENPi5EdbLFSkwOLJRca4dpxlKtJdV2ViZCLFhl/LseD0EIH4W1aAxJ/oqDYWgmus3eZCyy5vASH9uwjTllhd0fEaTyhoM8mRK3NgmRuDbAvACBH62SFwdSTA9J0FSplwEt+sdB9kZYiQc3gQljIekii2R767HOYqpZEU6H0ph+hsL7DDBtEqQ8mvuR/sNKAG/eb5nccbS6z8BjwYsTCLIkrvMJiw1x3Rt1aAV151JAtU/iyjnVROR0GS+KG2XJ8GSPcGWva+JCOyDGVTt45t97Ix2P04/wREZ082542XkuPjPQ2uhXelfrpMuqvw2vFLjJNZZJ3D+zBmzKHBSZEqoOo/HLIjkGNxY3sOARKc6Z2FMcGbkGnhX7QkLZuwg8faIYkRIbUweqftUhdzauwnuKhk5ikhSF/Wn3n8MQ+KVaCi18Qg27+2R6SeMcvm9sMC1KARftVcQkBJP22p4Xb6izCcEscgtbgPQmdUJRe47tOyvhe9NDlV7UEeWxPfC2RWKe4Z+0xd+f0J0N2ZWeULAA6nD/6fJJlFyDY4D69QCu4u1lFmb3I+Go0Kp6Rbdz9kXXFN8QVsW8if0SQgxtrRxjjkKiw4K8NdJ/7wz3m+WkIQBTQJIQhphIl96S/4BGgt26ceHA1FNvZOAFHAs01IN0AfRohzi3/kWiCIMjg0xEd4fDCmfacFXHKjoKhhYlxXP4Qaa6pcTtFAifBE2PdCscnsG3aAhgSN1IU2omoFvWBe2otvL+wmFLKzxVJRjVL8wpO8Y6YpjzUt~-1~-1~1778135912~AAQAAAAF%2f%2f%2f%2f%2f1k5SBQYujlV7ZbicSBmGeoW5XA9v1aeYidVIouuiJmcwzqc%2fY+UQ9CBxSXCNQT13l5lljWwYlmUc87r1XyMhoDuEztP05CFe8m5IsErIywWQG4eGEPwrGI0eXTssC2CQgj0jWy05nIQ3sOtF3Lty8aVE4k5x8dJhNAdT4DeiQ%3d%3d~-1',
+    }
+    headers_ups = {
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+        'content-type': 'application/json',
+        'origin': 'https://www.ups.com',
+        'priority': 'u=1, i',
+        'sec-ch-ua': '"Microsoft Edge";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
+        'x-xsrf-token': 'CfDJ8Jcj9GhlwkdBikuRYzfhrpKbs8ZIpRmMLBhUJlm8FZmJ8nPRCoCOPeqtperQgXGq0O5oR5_-58Yw9axWdwa0rJSrLhNN5Kx5zlQuiGUsapiZHnx57sspIK65qAwdj_17RfuWasuV1ZsXOsMdcjdUYxc',
+    }
+    db_config = {
+        'host': '192.168.120.45',
+        'user': 'arrow',
+        'password': 'arrowq1w2Q!W@',
+        'database': 'huoyun_info',
+        'charset': 'utf8mb4',
+        'autocommit': True
+    }
+
+    conn = pymysql.connect(**db_config)
+    print("✅ 数据库连接成功")
+
+    print(f"✅ 准备查询 {len(TRACKING_NUMBERS)} 条单号...")
+
+    for tracking in TRACKING_NUMBERS:
+        print(f"\n正在处理: {tracking}")
+
+        db_status = get_db_status(tracking, conn)
+
+        if tracking in flight_dict:
+            flight_row = flight_dict[tracking]
+        else:
+            sample_keys = flight_dict[next(iter(flight_dict))].keys() if flight_dict else ["Package ID / Tracking No."]
+            flight_row = {h: "" for h in sample_keys}
+            flight_row["Package ID / Tracking No."] = tracking
+
+        if db_status is not None and is_delivered(db_status):
+            ups_info = query_ups_detail(tracking, cookies, headers_ups)
+            if ups_info:
+                update_to_db(tracking, ups_info, flight_row, conn)
+                print(f"  ✅ 已送达，补录完成")
+            else:
+                print(f"  ⏭ 已送达，跳过")
+            time.sleep(1)
+            continue
+
+        ups_info = query_ups_detail(tracking, cookies, headers_ups)
+        if not ups_info:
+            print(f"  ⚠️ 无信息，跳过")
+            continue
+
+        if db_status is None:
+            merged_row = {**flight_row, **ups_info}
+            insert_to_db(merged_row, conn)
+        else:
+            update_to_db(tracking, ups_info, flight_row, conn)
+
+        time.sleep(1)
+
+    conn.close()
+    print("\n✅ 全部完成！服务字段已正常存入！")
