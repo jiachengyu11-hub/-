@@ -1,0 +1,323 @@
+import json
+import warnings
+import urllib3
+import requests
+import pymysql
+from curl_cffi import requests as curl_requests
+import time
+
+# 关闭警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings("ignore")
+requests.packages.urllib3.disable_warnings()
+
+# ====================== 运单号列表 ======================
+track_list = [
+    "488192093515", "119209717855", "413113864978", "380820248786",
+    "119209717443", "871035426630", "871032652195", "871088812064",
+    "871029871318", "870944689595", "871089947208", "413113864853",
+    "870943408681", "870987321343", "380769416567", "413113864408",
+    "871040785018", "871033352686", "871145062089",
+]
+
+# ====================== Cookie ======================
+API_COOKIES = {
+    'fdx_cbid': '241399671417774539070142637191521',
+    'gdl-clientId': '68645fc0-1f31-4e4f-8611-595a210dc2b8',
+    's_ecid': 'MCMID%7C66946347675683576683477989904643961064',
+    '_gcl_au': '1.1.1750088827.1777454055',
+    'siteDC': 'las',
+    'PIM-SESSION-ID': 'iGiXxAFIchnMgiK7',
+    'AMCVS_1E22171B520E93BF0A490D44%40AdobeOrg': '1',
+    's_cc': 'true',
+    'isTablet': 'false',
+    'isMobile': 'false',
+    'isWireless': 'false',
+    'aemserver': 'PROD-P-dotcom',
+    '_gdl-cc': '{%22functional%22:true%2C%22analytics%22:true%2C%22tracking%22:true%2C%22services%22:{%22adobeAudienceManager%22:true%2C%22adobeTarget%22:true}}',
+    'at_check': 'true',
+    'optimizelyEndUserId': 'oeu1778035502322r0.029506896951904782',
+    'Qs_lvt_616792': '1777453997%2C1777518088%2C1778035593',
+    'Qs_pv_616792': '2523005563218491400%2C4093897861112995000%2C2388831976807355400%2C3954147414289422300%2C1102436772721637100',
+    'fdx_locale': 'zh_HK',
+    'fdx_redirect': 'zh-hk',
+    'dtCookie1o88qxh9': 'v_4_srv_5_sn_F3702A4C5C1605AC797F9F4B393AA226_perc_100000_ol_0_mul_1_app-3Aea7c4b59f27d43eb_1',
+    'optimizelySession': '0',
+    's_sq': '%5B%5BB%5D%5D',
+    'g_sref': '(direct)',
+    'xacc': 'SG',
+    's_invisit': 'true',
+    'g_stime': '1778141359548',
+    's_vnum': '1778169599999&vn=5',
+    'coveo_visitorId': '03041e3a-0ec0-4b69-bdf2-3bda54a514f6',
+    'mboxEdgeCluster': '38',
+    'AMCV_1E22171B520E93BF0A490D44%40AdobeOrg': '359503849%7CMCMID%7C66946347675683576683477989904643961064%7CMCAID%7CNONE%7CMCOPTOUT-1778148837s%7CNONE%7CMCAAMLH-1778746437%7C3%7CMCAAMB-1778746437%7Cj8Odv6LonN4r3an7LhD3WZrU1bUpAkFkkiY1ncBR96t2PTI%7CvVersion%7C5.0.1%7CMCIDTS%7C20580%7CMCSYNCSOP%7C411-20587',
+    'mbox': 'PC#272a38019b46490bb6d9ae783680a0a5.38_0#1841386438|session#d42a1378d7c146faaf2910f1637537ac#1778143499',
+    'gpv_pageName': 'fedex/apps/wtrk/simplifiedtracking',
+    'bm_mi': '98FFDE1B73A240684E7C94E9EE22FB2E~YAAQ0KTBFw6gb/mdAQAAV/OBAR91QQ3EUsbXMxIzNLeNhxUBtZGj1Dr6ilsm7gXHKDum48+KiWvpiW/wVUAp1ZWUJLQBJtRPWX1gGiffz3qVvjpGPxokjJAv8lv21/YT6lxv7/xfjPKNhH/ETdNhNt+U7U9IyJFhkli3LLimTh5Vni1Mncs4riqf7iH9gpdXtXVW5/K5mqXXFQIAoC9urFLsnhjtPoJuqFIU8uVbiYgek7S1KQxCohgrPraZINd1w5HhhD8G8cFUAw2p4zCR5qHqdjLFMQAnFGZmuQFUcFaYXOaYooq6YCH8ESlCiisWbskY1e4Uim4=~1',
+    'bm_sv': '4B13CBCC5AEC8D6A5AD3E622EB73B78E~YAAQyKTBF3U9yPidAQAAvQqCAR8JiSpjVrWt+UuKbtpwWB+uwODqPxseiOmGhZJbSU069Z0S4bbAfle/1JIEpqCx8Hig4i79JawFgzlDazZwB6D5F6ttVaknVIaZWfX7QM91sHaLTuQyy/m0z63gMnmNxVocYMHPCVgXYRkmIbfaJRIANYVRaYrdI4D7eDd/SJHu7C1CaCoa/niPtrVzb/hCQgRT5pZ/uYsR1PDkwpergZzXq58Zma6spNABIOy8~1',
+    '_uetsid': '3bbe9f1048ed11f19e040b65d99879d4|1ut5aan|2|g5u|0|2317',
+    '_uetvid': '44a0ff40444511f189307b2a1111c0e7|100gse7|1778141765435|5|1|bat.bing.com/p/conversions/c/k',
+    'ADRUM': 's=1778141785319&r=https%3A%2F%2Fwww.fedex.com%2Ffedextrack%2F%3Fhash%3D-477147240',
+    'ak_bmsc': '46057C05A8D5F24E4E46954D58736E0A~000000000000000000000000000000~YAAQ0KTBF/jJb/mdAQAAUXCCAR9sWrDHQHqVHiZAlfO2yaudJAOgfWvvUVEcJ46vNlloHmDL1aRpen8OZEZaEjVBNCEuQC/1XlGTxaCCdBNxqREdBfIh/Jx22QWBa/QbFADyDxJF4P/x9iSCgW2oEJZdfWQ3IkXPjh/oAQOkz9nVniPE0W5Bztiao9o5iUJSRA00Bae3TPe/ymDXczY8UdHE5kxWPpH8odoYOd+Brfj1z/VIS1/R4zH4C98eZyCT7VVj3snZafc77f/lzzqFmMkuCfQo3KRxsvtOqoKenRj+5ZePKW7lsG+8V+r+S8nFTbocwJNyvkxdSkKodQrvOsd93TnAWOxggVz+nfln/e3WlI5l+6DIotAH9rbEv+seM/JkX5fFGI45NsJhxSPB7yuzrg4ibn1v5DW2hcVumFiaAMrGNu/h2MUTjvXQSl0aMckcTtKItsVPa/5QxQKnnIsb0EJ8ZME8yRktkr9SnECxdzvjqYBuPmZsy+wIwXAi',
+    'bm_sz': '099CC10FC8445863B578A60A93175F5D~YAAQ0KTBF9zKb/mdAQAAK3KCAR8NimYaRbi5D8OduEs7zDEpZvr5vh9rcegznQ7fihnqu8njY128V6SYhFoVtTQckqKzUhelezd95ivcwladozU3rOANITYqc802aIHWnKjlNiU0FJwzUK599GXHJ7tXn0OFDo+nYhYyITefdV1AHYkiWwgkIJY3J4IqhtDgAlQAUhHX5LjEiPL6+zwl8jmp1Z3/eEaeTNkMDKg6xknBmWlQNIZHujjueo3Ym9xWx+hEvI3ED1Sz+zEMaDoXZkqNUPMCl7x8a3JgLglH85ZBHVT4g2VBcHapTKTs+IGDrzdkBrESetM5E1qfNjSGiYsxschuTkdpTsRv+ziGQyqsNCVPQEli9VyMIO9DNk1CSr5iN/Plg+vmlVV91tpZCIJFN5t2zmH6cPzNdGCzxAOPJ+EYeUZB8ZDm3VrgWO03j7vx0U6A7FjJyhanDhhfRPs36uPlU5W14KL+bsVJCPQFytMxc2EVPJzLQN6h0DI/Jq7hdf0QNFCipxMyRJve05c/~4604983~4600132',
+    's_ppv': 'fedex/apps/wtrk/simplifiedtracking%2C51%2C51%2C0',
+    'optimizelyOptOut': 'true',
+    '_abck': '3EBE9A60F2165C9EBF743B6E3849E4B1~0~YAAQ0KTBF23Lb/mdAQAAdXOCAQ+s/fywF1q3pGsSVT0se20+X+rNBaw0N9l9jZbj7Hyee3i5BMwdSaEakkL9VzrCgjiZYtFaXwSPwXG4IhTQpPsmeAeFcBrmt9RpwqNsOmw9mifCj0JsWLbYgxMWJiia3EtsH1PFEsrr+bSb88+UY/LXffKvZ48tzlwv3JxmqVzzr/WhnKyZ7BlKxmD6NmcQVJ9OTgBSio7k6luJKGhwsL4m6THA5bh4HCCnXLxQaU8bgtJE7MfWHAPpuVzbWY3DcnYEbIbRZ2AscqOHcZjIaQ3RkBtyLlKD/4Q7lBudBAc8+eIceglp45v7k05mUWVXdu2bwcaXoJ1VaMkdc0D46t9i+3m5zNtXMYDLehUMcsJdXMK74f1MvogdVUgsu1at0g2c/Vt6NJiNrzZ0P2LS8SozzTXPtM195G0tBXj3Gokaj0ob3qvsJYDE74uE+D9tHrKQwK2YSE8FRDFGGmifjU+w+e1aoSfOFWUaICKwgtgnmpR4Zno8sBHXBUWOvXX7K/+kSSy6ftRGsjhuTuJ6teZFRpDipUf1S6HccyXkbuqlAAqeiX+8pq1CxDRHElF/gFPwWEYSoxgYxDEIl39xHKPd6Frr85MV3a5NrKXNW/Zos5ztfEYVA0iaE7Wr0YSGMOnnLHjIPYf87w8NJCZXMGrNFqZq1Q0WVMjoiUlB0ong7sFb+9y/lpUVZ01UDo2P+kY0G4nneIO9nkbmPT9BmS+j73IlCK+3qloVcG8PVqyXcC3XdsXiOTz6CyPRxUsRbiutJ8nBdPxIbDIt1HQnzs0tkCXNZxWEvRTDD766IW/7ZvHgYrT4/Dj/qYrVv6Yw6xMOYdChhopfbmLmm6mwwB00kd+ybf3aHBNTcvpix9W5shM8XeqHCyJvEBLUcluXXWeS8EnsjC2scnOtI1ASv2ujbynsKEnoxoZbBiYxzO1vG5ZQRQi6M/njtzCOcZ14Y7VL444FtJxN8q09g0eyphiAPwLTv8S+j+7+IdH/FNEc7O0S5V4EORQX6d2iYB3AwyrEIEq8aoG0b6sN03rXzoPVmRSmsHqUuClgQL4r3h9ISQBEoRI93MYnpTaw~-1~-1~1778142008~AAQAAAAF%2f%2f%2f%2f%2f0VJW%2fCz0bpQttKfSk9wRgcucI%2f6Tx7vCh9NJBOcSHfCljl0yvss+A6dWGf81qE29yqKarFxhNnQrt2IF6JajRS3N%2fAv1Mu7tW7tCDvCp1EUq5TD6+4TQ6WeN0tNPxq1xO9e%2fL2rsUjXPjUXjAx3trl3qXYpDG9Lpo5yaR+m44p5czzA3NLGU%2fLxqheFj7d6g0iXlIgqQPQ7bV9NEeA7Yhi0ljHB6b1iboBGhXh7mpZ9dYE%3d~-1',
+    'fdx_bman': 'a40f1c0c979d492a86b8d05a1bdf8dbc',
+}
+
+API_HEADERS = {
+    'accept': 'application/json',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+    'authorization': 'Bearer l7b8ada987a4544ff7a839c8e1f6548eea',
+    'content-type': 'application/json',
+    'origin': 'https://www.fedex.com',
+    'referer': 'https://www.fedex.com/',
+    'sec-ch-ua': '"Microsoft Edge";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
+    'x-clientid': 'WTRK',
+    'x-locale': 'zh_HK',
+    'x-requested-with': 'XMLHttpRequest',
+    'x-version': '1.0.0',
+}
+
+
+# ====================== 【官方真实接口】获取关联包裹 100% 可用 ======================
+def get_associated_packages(track_num):
+    try:
+        url = "https://api.fedex.com/track/v2/shipments/associatedpackages"
+        payload = {"trackingNumber": track_num}
+
+        resp = curl_requests.post(
+            url,
+            headers=API_HEADERS,
+            cookies=API_COOKIES,
+            json=payload,
+            impersonate="chrome120",
+            verify=False,
+            timeout=8
+        )
+        data = resp.json()
+        ship_list = data.get("output", {}).get("associatedShipmentList", [])
+        nums = [item.get("trackingNbr") for item in ship_list if item.get("trackingNbr") != track_num]
+        return ", ".join(nums) if nums else ""
+    except Exception as e:
+        return ""
+
+
+# ====================== 请求主接口 ======================
+def build_json_payload(numbers: list) -> dict:
+    return {
+        'appDeviceType': 'WTRK',
+        'appType': 'WTRK',
+        'supportHTML': True,
+        'supportCurrentLocation': True,
+        'trackingInfo': [{'trackNumberInfo': {'trackingCarrier': '', 'trackingNumber': num, 'trackingQualifier': ''}}
+                         for num in numbers],
+        'uniqueKey': '',
+        'guestAuthenticationToken': '',
+    }
+
+
+def fetch_track_api_full(numbers: list) -> dict:
+    payload = build_json_payload(numbers)
+    try:
+        resp = curl_requests.post(
+            'https://api.fedex.com/track/v2/shipments',
+            cookies=API_COOKIES,
+            headers=API_HEADERS,
+            json=payload,
+            impersonate="chrome120",
+            verify=False,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"请求失败，状态码: {resp.status_code}")
+            return {}
+        return resp.json()
+    except Exception as e:
+        print(f"请求异常: {e}")
+        return {}
+
+
+# ====================== 数据库配置 ======================
+db_config = {
+    'host': '192.168.120.45',
+    'user': 'arrow',
+    'password': 'arrowq1w2Q!W@',
+    'database': 'huoyun_info',
+    'charset': 'utf8mb4'
+}
+
+
+# ====================== 存入数据库 ======================
+def save_to_db(pkg: dict, track_no: str):
+    try:
+        conn = pymysql.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM fedex_customs_full WHERE 运单号 = %s", (track_no,))
+        exists = cursor.fetchone()
+
+        ship_addr = f"{pkg.get('shipperAddress', {}).get('city', '')},{pkg.get('shipperAddress', {}).get('countryCode', '')}"
+        recv_addr = f"{pkg.get('recipientAddress', {}).get('city', '')},{pkg.get('recipientAddress', {}).get('countryCode', '')}"
+        received_by = pkg.get('receivedByNm', '') or pkg.get('recipient', {}).get('name', '')
+
+        total_pcs = pkg.get('totalPieces', 1)
+        try:
+            total_pcs = int(total_pcs)
+        except:
+            total_pcs = 1
+
+        # ====================== 真正获取关联包裹 ======================
+        if total_pcs == 1:
+            other_packages = track_no
+        else:
+            other_packages = get_associated_packages(track_no)
+            time.sleep(0.3)
+
+        # ====================== 更新 ======================
+        if exists:
+            sql = """
+            UPDATE fedex_customs_full SET
+                查询号码 = %s,
+                入口 = %s,
+                抵港日期 = %s,
+                主空运提单号码 = %s,
+                海关货物编号 = %s,
+                装货港口 = %s,
+                运输方式 = %s,
+                状态 = %s,
+                发货地址 = %s,
+                收货地址 = %s,
+                总件数 = %s,
+                重量 = %s,
+                发货日期 = %s,
+                签收日期 = %s,
+                服务类型 = %s,
+                来源 = %s,
+                服务 = %s,
+                其他包裹 = %s,
+                货运单号 = %s,
+                航班车辆船只编号 = %s,
+                主运单号 = %s,
+                签收人 = %s
+            WHERE 运单号 = %s
+            """
+            data = (
+                track_no,
+                pkg.get('recipientAddress', {}).get('countryCode', ''),
+                pkg.get('customsClearance', {}).get('arrivalDate', ''),
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                pkg.get('customsClearance', {}).get('customsReferenceNumber', ''),
+                pkg.get('customsClearance', {}).get('portOfLoading', ''),
+                pkg.get('customsClearance', {}).get('transportMode', ''),
+                pkg.get('keyStatus', ''),
+                ship_addr, recv_addr,
+                total_pcs,
+                pkg.get('displayTotalWgt', ''),
+                pkg.get('displayShipDt', ''),
+                pkg.get('displayActDeliveryDateTime', ''),
+                pkg.get('serviceDesc', ''),
+                'FedEx',
+                pkg.get('serviceDesc', ''),
+                other_packages,
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                '',
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                received_by,
+                track_no
+            )
+            cursor.execute(sql, data)
+            print(f"🔄 已更新：{track_no} | 签收人: {received_by} | 其他包裹: {other_packages}")
+
+        # ====================== 插入 ======================
+        else:
+            sql = """
+            INSERT INTO fedex_customs_full (
+                查询号码, 入口, 抵港日期, 主空运提单号码, 海关货物编号,
+                装货港口, 运输方式, 运单号, 状态, 发货地址,
+                收货地址, 总件数, 重量, 发货日期, 签收日期,
+                服务类型, 来源, 服务, 其他包裹, 货运单号,
+                航班车辆船只编号, 主运单号, 签收人
+            ) VALUES (%s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,%s,
+                     %s,%s,%s)
+            """
+            data = (
+                track_no,
+                pkg.get('recipientAddress', {}).get('countryCode', ''),
+                pkg.get('customsClearance', {}).get('arrivalDate', ''),
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                pkg.get('customsClearance', {}).get('customsReferenceNumber', ''),
+                pkg.get('customsClearance', {}).get('portOfLoading', ''),
+                pkg.get('customsClearance', {}).get('transportMode', ''),
+                track_no,
+                pkg.get('keyStatus', ''),
+                ship_addr, recv_addr,
+                total_pcs,
+                pkg.get('displayTotalWgt', ''),
+                pkg.get('displayShipDt', ''),
+                pkg.get('displayActDeliveryDateTime', ''),
+                pkg.get('serviceDesc', ''),
+                'FedEx',
+                pkg.get('serviceDesc', ''),
+                other_packages,
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                '',
+                pkg.get('customsClearance', {}).get('masterAirWaybillNumber', ''),
+                received_by
+            )
+            cursor.execute(sql, data)
+            print(f"✅ 入库成功：{track_no} | 签收人: {received_by} | 其他包裹: {other_packages}")
+
+        conn.commit()
+
+    except Exception as e:
+        print(f"❌ 操作失败：{e}")
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+
+# ====================== 主程序 ======================
+if __name__ == "__main__":
+    full_api_data = fetch_track_api_full(track_list)
+    packages = full_api_data.get("output", {}).get("packages", [])
+    pkg_map = {p.get("trackingNbr"): p for p in packages if p.get("trackingNbr")}
+
+    for track_num in track_list:
+        print("-" * 80)
+        print(f"📦 查詢號碼: {track_num}")
+        print("-" * 80)
+        pkg = pkg_map.get(track_num, {})
+
+        if pkg:
+            print(f"遞送至: {pkg.get('recipientAddress', {}).get('city', '')}")
+            print(f"託運日期: {pkg.get('displayShipDt', '')}")
+            print(f"標準運送時間: {pkg.get('standardTransitDate', {}).get('displayStdTransitDate', '')}")
+            print(f"已送達: {pkg.get('displayActDeliveryDateTime', '')}")
+            print(f"服務: {pkg.get('serviceDesc', '')}")
+            print(f"條款: {pkg.get('terms', '')}")
+            print(f"特別處理部分: {pkg.get('specialHandlingServicesList', '')}")
+            print(f"重量: {pkg.get('displayTotalWgt', '')}")
+            print(f"尺寸: {pkg.get('pkgDimCm', '')}")
+            print(f"貨件總數量: {pkg.get('totalPieces', '')}")
+            print(f"總貨件重量: {pkg.get('displayTotalWgt', '')}")
+            print(f"包裝: {pkg.get('packaging', '')}")
+            print(f"出境原因: {pkg.get('returnReason', '')}")
+
+            save_to_db(pkg, track_num)
+        else:
+            print("未查询到信息")
+
+    print("-" * 80)
